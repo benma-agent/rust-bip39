@@ -16,7 +16,7 @@ default = [ "std" ]
 std = [ "alloc", "serde/std", "unicode-normalization/std" ]
 rand = [ "crate_rand", "rand_core" ]
 alloc = [ "unicode-normalization" ]
-# Compact English word storage. Requires Rust 1.46 or newer.
+# Compact word storage for all enabled languages. Requires Rust 1.46 or newer.
 compact-wordlist = []
 
 # Note: English is the standard for bip39 so always included

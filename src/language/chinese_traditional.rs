@@ -1,4 +1,4 @@
-pub const WORDS: [&str; 2048] = [
+word_list! {
 	"的",
 	"一",
 	"是",
@@ -2047,4 +2047,4 @@ pub const WORDS: [&str; 2048] = [
 	"怨",
 	"矮",
 	"歇",
-];
+}

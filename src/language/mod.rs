@@ -1,9 +1,21 @@
 use core::fmt;
 
+// Keep one canonical word list for both representations. concat! builds a valid string at
+// compile time, so compact lookup can borrow a slice without a UTF-8 conversion.
+macro_rules! word_list {
+	($($word:literal),* $(,)?) => {
+		pub(super) const WORDS: [&str; 2048] = [$($word),*];
+		#[cfg(feature = "compact-wordlist")]
+		pub(super) const TEXT: &str = concat!($($word),*);
+	};
+}
+
 #[cfg(feature = "chinese-simplified")]
 mod chinese_simplified;
 #[cfg(feature = "chinese-traditional")]
 mod chinese_traditional;
+#[cfg(feature = "compact-wordlist")]
+mod compact;
 #[cfg(feature = "czech")]
 mod czech;
 mod english;
@@ -100,7 +112,7 @@ impl Language {
 
 	/// The word list for this language.
 	///
-	/// With `compact-wordlist`, using this method retains the original English word table in
+	/// With `compact-wordlist`, using this method retains the original word table in
 	/// addition to any compact storage in use. Prefer [Language::word_at] or
 	/// [Language::words_by_prefix_iter] to allow the original table to be omitted from the binary.
 	#[inline]
@@ -130,16 +142,16 @@ impl Language {
 
 	/// Returns the word at the given BIP-39 index, or `None` if the index is at least 2048.
 	///
-	/// With `compact-wordlist`, English words are borrowed from compact storage without
-	/// allocating. Other languages use the same storage as [Language::word_list].
+	/// With `compact-wordlist`, words are borrowed from compact storage without allocating.
 	pub fn word_at(self, index: usize) -> Option<&'static str> {
 		#[cfg(feature = "compact-wordlist")]
 		{
-			if self == Language::English {
-				return english::compact::word_at(index);
-			}
+			compact::WordList::for_language(self).word_at(index)
 		}
-		self.word_list().get(index).copied()
+		#[cfg(not(feature = "compact-wordlist"))]
+		{
+			self.word_list().get(index).copied()
+		}
 	}
 
 	/// Returns true if all words in the list are guaranteed to
@@ -195,9 +207,29 @@ impl Language {
 		self,
 		prefix: &'a str,
 	) -> impl Iterator<Item = &'static str> + Clone + 'a {
-		(0..2048)
-			.map(move |index| self.word_at(index).unwrap())
-			.filter(move |word| word.starts_with(prefix))
+		self.words().filter(move |word| word.starts_with(prefix))
+	}
+
+	fn words(self) -> impl Iterator<Item = &'static str> + Clone {
+		#[cfg(feature = "compact-wordlist")]
+		{
+			compact::WordList::for_language(self).iter()
+		}
+		#[cfg(not(feature = "compact-wordlist"))]
+		{
+			self.word_list().iter().copied()
+		}
+	}
+
+	fn binary_search_word(self, word: &str) -> Option<usize> {
+		#[cfg(feature = "compact-wordlist")]
+		{
+			compact::WordList::for_language(self).binary_search(word)
+		}
+		#[cfg(not(feature = "compact-wordlist"))]
+		{
+			self.word_list().binary_search(&word).ok()
+		}
 	}
 
 	/// Get the index of the word in the word list.
@@ -206,16 +238,13 @@ impl Language {
 		match self {
 			// English, Portuguese, Italian, and Korean wordlists are already lexicographically
 			// sorted, so they are candidates for optimization via binary_search
-			#[cfg(feature = "compact-wordlist")]
-			Self::English => english::compact::find_word(word),
-			#[cfg(not(feature = "compact-wordlist"))]
-			Self::English => self.word_list().binary_search(&word).map(|x| x as _).ok(),
+			Self::English => self.binary_search_word(word),
 			#[cfg(feature = "portuguese")]
-			Self::Portuguese => self.word_list().binary_search(&word).map(|x| x as _).ok(),
+			Self::Portuguese => self.binary_search_word(word),
 			#[cfg(feature = "italian")]
-			Self::Italian => self.word_list().binary_search(&word).map(|x| x as _).ok(),
+			Self::Italian => self.binary_search_word(word),
 			#[cfg(feature = "korean")]
-			Self::Korean => self.word_list().binary_search(&word).map(|x| x as _).ok(),
+			Self::Korean => self.binary_search_word(word),
 
 			// All other languages' wordlists are not lexicographically sorted, so we have to
 			// resort to linear search
@@ -227,8 +256,9 @@ impl Language {
 				feature = "japanese",
 				feature = "spanish",
 			))]
-			_ => self.word_list().iter().position(|w| *w == word).map(|i| i as u16),
+			_ => self.words().position(|w| w == word),
 		}
+		.map(|i| i as u16)
 	}
 }
 

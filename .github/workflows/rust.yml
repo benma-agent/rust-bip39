@@ -77,7 +77,7 @@ jobs:
       - name: Test compact storage with minimum dependency versions
         run: |
           cp Cargo-minimal.lock Cargo.lock
-          cargo test --locked --features="compact-wordlist"
+          cargo test --locked --features="compact-wordlist all-languages"
 
   Arch32bit:
     name: Test 32-bit version

@@ -1,4 +1,4 @@
-pub const WORDS: [&str; 2048] = [
+word_list! {
 	"abaco",
 	"abbaglio",
 	"abbinato",
@@ -2047,4 +2047,4 @@ pub const WORDS: [&str; 2048] = [
 	"zufolo",
 	"zulu",
 	"zuppa",
-];
+}
