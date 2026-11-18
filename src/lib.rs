@@ -83,6 +83,9 @@ const MIN_NB_WORDS: usize = 12;
 /// The maximum number of words in a mnemonic.
 const MAX_NB_WORDS: usize = 24;
 
+const PBKDF2_ROUNDS: usize = 2048;
+const PBKDF2_BYTES: usize = 64;
+
 /// The index used to indicate the mnemonic ended.
 const EOF: u16 = u16::max_value();
 
@@ -701,9 +704,6 @@ impl Mnemonic {
 
 	/// Convert to seed bytes with a passphrase in normalized UTF8.
 	pub fn to_seed_normalized(&self, normalized_passphrase: &str) -> [u8; 64] {
-		const PBKDF2_ROUNDS: usize = 2048;
-		const PBKDF2_BYTES: usize = 64;
-
 		let mut seed = [0u8; PBKDF2_BYTES];
 		pbkdf2::pbkdf2(self.words(), normalized_passphrase.as_bytes(), PBKDF2_ROUNDS, &mut seed);
 		seed
@@ -711,30 +711,22 @@ impl Mnemonic {
 
 	/// Async version of `to_seed_normalized`.
 	///
-	/// The passphrase must already be NFKD-normalized. `yield_now` is awaited after
-	/// each PBKDF2 round (2048 times), allowing the caller to yield
-	/// to its executor without requiring a particular async runtime.
+	/// The passphrase must already be NFKD-normalized. After each of the 2048
+	/// PBKDF2 rounds, this method calls `yield_now` and awaits the returned
+	/// future so the caller can yield to its executor.
 	///
-	/// Requires the `async` feature and Rust 1.85. Works without `std` or `alloc`.
+	/// Requires the `async` feature. Works without `std` or `alloc`.
 	#[cfg(feature = "async")]
-	pub async fn to_seed_normalized_async(
-		&self,
-		normalized_passphrase: &str,
-		yield_now: impl core::ops::AsyncFn(),
-	) -> [u8; 64] {
-		const PBKDF2_ROUNDS: usize = 2048;
-		const PBKDF2_BYTES: usize = 64;
-
-		let mut seed = [0u8; PBKDF2_BYTES];
-		pbkdf2::pbkdf2_async(
-			self.words(),
-			normalized_passphrase.as_bytes(),
-			PBKDF2_ROUNDS,
-			&mut seed,
-			yield_now,
-		)
-		.await;
-		seed
+	pub fn to_seed_normalized_async<'a, F, Fut>(
+		&'a self,
+		normalized_passphrase: &'a str,
+		yield_now: F,
+	) -> impl core::future::Future<Output = [u8; 64]> + 'a
+	where
+		F: FnMut() -> Fut + 'a,
+		Fut: core::future::Future<Output = ()> + 'a,
+	{
+		pbkdf2::async_seed::derive(self.words(), normalized_passphrase.as_bytes(), yield_now)
 	}
 
 	/// Convert to seed bytes.

@@ -1,5 +1,8 @@
 use bitcoin_hashes::{hmac, sha512, Hash, HashEngine};
 
+#[cfg(feature = "async")]
+pub(crate) mod async_seed;
+
 const SALT_PREFIX: &'static str = "mnemonic";
 
 /// Calculate the binary size of the mnemonic.
@@ -31,6 +34,8 @@ fn mnemonic_write_into<M>(mnemonic: M, engine: &mut sha512::HashEngine)
 /// Create an HMAC engine from the passphrase.
 /// We need a special method because we can't allocate a new byte
 /// vector for the entire serialized mnemonic.
+// Keep the SHA-512 temporaries for key setup and block_round in separate stack frames.
+#[inline(never)]
 fn create_hmac_engine<M>(mnemonic: M) -> hmac::HmacEngine<sha512::Hash>
 	where M: Iterator<Item = &'static str> + Clone,
 {
@@ -95,6 +100,26 @@ fn xor(res: &mut [u8], salt: &[u8]) {
 	res.iter_mut().zip(salt.iter()).for_each(|(a, b)| *a ^= b);
 }
 
+/// Compute one PBKDF2 round in place, retaining its HMAC as input to the next round.
+#[inline(never)]
+fn block_round(
+	prf: &hmac::HmacEngine<sha512::Hash>,
+	unprefixed_salt: &[u8],
+	block_index: usize,
+	round: usize,
+	salt: &mut [u8; sha512::Hash::LEN],
+) {
+	let mut prfc = prf.clone();
+	if round == 0 {
+		prfc.input(SALT_PREFIX.as_bytes());
+		prfc.input(unprefixed_salt);
+		prfc.input(&u32_to_array_be((block_index + 1) as u32));
+	} else {
+		prfc.input(salt);
+	}
+	*salt = hmac::Hmac::from_engine(prfc).to_byte_array();
+}
+
 /// PBKDF2-HMAC-SHA512 implementation using bitcoin_hashes.
 pub(crate) fn pbkdf2<M>(mnemonic: M, unprefixed_salt: &[u8], c: usize, res: &mut [u8])
 	where M: Iterator<Item = &'static str> + Clone,
@@ -106,64 +131,11 @@ pub(crate) fn pbkdf2<M>(mnemonic: M, unprefixed_salt: &[u8], c: usize, res: &mut
 			*v = 0;
 		}
 
-		let mut salt = {
-			let mut prfc = prf.clone();
-			prfc.input(SALT_PREFIX.as_bytes());
-			prfc.input(unprefixed_salt);
-			prfc.input(&u32_to_array_be((i + 1) as u32));
-
-			let salt = hmac::Hmac::from_engine(prfc).to_byte_array();
+		let mut salt = [0; sha512::Hash::LEN];
+		// The first HMAC is computed even when c is zero.
+		for round in 0..c.max(1) {
+			block_round(&prf, unprefixed_salt, i, round, &mut salt);
 			xor(chunk, &salt);
-			salt
-		};
-
-		for _ in 1..c {
-			let mut prfc = prf.clone();
-			prfc.input(&salt);
-			salt = hmac::Hmac::from_engine(prfc).to_byte_array();
-
-			xor(chunk, &salt);
-		}
-	}
-}
-
-/// Async version of `pbkdf2`, yielding after each round.
-#[cfg(feature = "async")]
-pub(crate) async fn pbkdf2_async<M>(
-	mnemonic: M,
-	unprefixed_salt: &[u8],
-	c: usize,
-	res: &mut [u8],
-	yield_now: impl core::ops::AsyncFn(),
-) where
-	M: Iterator<Item = &'static str> + Clone,
-{
-	let prf = create_hmac_engine(mnemonic);
-
-	for (i, chunk) in res.chunks_mut(sha512::Hash::LEN).enumerate() {
-		for v in chunk.iter_mut() {
-			*v = 0;
-		}
-
-		let mut salt = {
-			let mut prfc = prf.clone();
-			prfc.input(SALT_PREFIX.as_bytes());
-			prfc.input(unprefixed_salt);
-			prfc.input(&u32_to_array_be((i + 1) as u32));
-
-			let salt = hmac::Hmac::from_engine(prfc).to_byte_array();
-			xor(chunk, &salt);
-			salt
-		};
-		yield_now().await;
-
-		for _ in 1..c {
-			let mut prfc = prf.clone();
-			prfc.input(&salt);
-			salt = hmac::Hmac::from_engine(prfc).to_byte_array();
-
-			xor(chunk, &salt);
-			yield_now().await;
 		}
 	}
 }

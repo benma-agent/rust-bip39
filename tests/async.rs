@@ -1,29 +1,50 @@
 #![cfg(feature = "async")]
 
 use std::cell::Cell;
-use std::future::{Future, poll_fn};
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use bip39::{Language, Mnemonic};
 
-async fn yield_once() {
-	let mut yielded = false;
-	poll_fn(|cx| {
-		if yielded {
-			Poll::Ready(())
-		} else {
-			yielded = true;
-			cx.waker().wake_by_ref();
-			Poll::Pending
+fn noop_waker() -> Waker {
+	fn raw_waker() -> RawWaker {
+		static VTABLE: RawWakerVTable =
+			RawWakerVTable::new(|_| raw_waker(), |_| {}, |_| {}, |_| {});
+		RawWaker::new(std::ptr::null(), &VTABLE)
+	}
+	// SAFETY: All clones use the same static vtable. Its functions never access the data pointer.
+	unsafe { Waker::from_raw(raw_waker()) }
+}
+
+fn yield_once() -> impl Future<Output = ()> {
+	struct YieldOnce {
+		yielded: bool,
+	}
+
+	impl Future for YieldOnce {
+		type Output = ();
+
+		fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+			if self.yielded {
+				Poll::Ready(())
+			} else {
+				self.yielded = true;
+				cx.waker().wake_by_ref();
+				Poll::Pending
+			}
 		}
-	})
-	.await
+	}
+
+	YieldOnce {
+		yielded: false,
+	}
 }
 
 fn finish(future: impl Future<Output = [u8; 64]>, expected_yields: usize) -> [u8; 64] {
-	let mut future = pin!(future);
-	let mut cx = Context::from_waker(Waker::noop());
+	let mut future = Box::pin(future);
+	let waker = noop_waker();
+	let mut cx = Context::from_waker(&waker);
 	for _ in 0..expected_yields {
 		assert!(future.as_mut().poll(&mut cx).is_pending());
 	}
@@ -49,15 +70,36 @@ fn test_to_seed_normalized_async() {
 			let passphrase = &passphrases[i];
 			let expected = mnemonic.to_seed_normalized(passphrase);
 			assert_eq!(
-				finish(mnemonic.to_seed_normalized_async(passphrase, yield_once), 2048),
-				expected
+				&finish(mnemonic.to_seed_normalized_async(passphrase, yield_once), 2048)[..],
+				&expected[..]
 			);
-			assert_eq!(
-				finish(mnemonic.to_seed_normalized_async(passphrase, || async {}), 0),
-				expected
-			);
+			let mut rounds = 0;
+			let future = mnemonic.to_seed_normalized_async(passphrase, || {
+				rounds += 1;
+				async {}
+			});
+			assert_eq!(&finish(future, 0)[..], &expected[..]);
+			assert_eq!(rounds, 2048);
 		}
 	}
+}
+
+#[test]
+fn test_yield_future_borrows_its_own_state() {
+	let mnemonic = Mnemonic::from_entropy(&[0; 16]).unwrap();
+	let completed = Cell::new(0);
+	let mut future = Box::pin(mnemonic.to_seed_normalized_async("", || async {
+		let mut value = 0;
+		let borrowed = &mut value;
+		yield_once().await;
+		*borrowed += 1;
+		completed.set(completed.get() + value);
+	}));
+	let waker = noop_waker();
+	let mut cx = Context::from_waker(&waker);
+	assert!(future.as_mut().poll(&mut cx).is_pending());
+	assert!(future.as_mut().poll(&mut cx).is_pending());
+	assert_eq!(completed.get(), 1);
 }
 
 #[test]
@@ -80,7 +122,8 @@ fn test_to_seed_normalized_async_cancellation() {
 			yield_once().await;
 			finished.set(finished.get() + 1);
 		}));
-		let mut cx = Context::from_waker(Waker::noop());
+		let waker = noop_waker();
+		let mut cx = Context::from_waker(&waker);
 		for _ in 0..polls {
 			assert!(future.as_mut().poll(&mut cx).is_pending());
 		}

@@ -30,11 +30,10 @@ Use the `all-languages` feature to enable all languages.
 ## Async seed derivation
 
 Enable the `async` feature to use `Mnemonic::to_seed_normalized_async`. Pass an
-NFKD-normalized passphrase and an async callback that yields to your executor.
-The callback is awaited after each PBKDF2 round (2048 times).
+NFKD-normalized passphrase and a callback that yields to your executor. After
+each of the 2048 PBKDF2 rounds, the method calls the callback and awaits the
+future it returns.
 No particular async runtime is required.
-
-This feature requires Rust 1.85 and works without `std` or `alloc`.
 
 
 ## MSRV

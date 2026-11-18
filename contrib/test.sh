@@ -2,12 +2,7 @@
 
 set -ex
 
-FEATURES="serde rand all-languages chinese-simplified chinese-traditional czech french italian japanese korean portuguese spanish"
-
-# The optional async API uses AsyncFn, stabilized in Rust 1.85.
-if [ "$(rustc --version | cut -d. -f2)" -ge 85 ]; then
-    FEATURES="$FEATURES async"
-fi
+FEATURES="serde rand async all-languages chinese-simplified chinese-traditional czech french italian japanese korean portuguese spanish"
 
 cargo --version
 rustc --version
@@ -42,6 +37,7 @@ done
 
 if cargo --version | grep -v "1\.41"; then
     cargo build --verbose --features="zeroize" --no-default-features
+    cargo test --verbose --all-features
 fi
 
 if [ "$DO_NO_STD" = true ]
